@@ -14,13 +14,14 @@
 #include <std_msgs/String.h>
 #include <std_msgs/Float32MultiArray.h>
 #include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Int32MultiArray.h>
 #include <geometry_msgs/Twist.h>
 
 
 ros::NodeHandle  nh;
 
 std_msgs::String str_msg;
-ros::Publisher *motor_fb_pub, *chatter2;
+ros::Publisher *motor_fb_pub, *odom;
 ros::Subscriber_ *vel_subs;
 
 // ros::Publisher chatter("chatter", &str_msg);
@@ -31,7 +32,12 @@ char hello[13] = "hello world!";
 // Blinking rate in milliseconds
 #define BLINKING_RATE_MS                                                    500
 
-// Serial pc(USBTX, USBRX);
+//thread
+Thread odom_thread;
+Mutex odom_mtx;
+
+DigitalIn odom_left_opto(PC_6);
+DigitalIn odom_right_opto(PC_8);
 
 PinName pin_motors_pwm[] = {PB_5, PB_15, PB_14, PB_13} ;
 PinName pin_motors_switcher[] = {PA_0, PA_1, PA_4, PB_0, PC_1, PC_0, PC_3, PC_2} ;
@@ -43,6 +49,65 @@ DigitalOut led1(LED1);
 
 //kinematik
 double vx, va;
+
+//odom
+bool last_odom_left = false;
+bool last_odom_right = false;
+int left_odom_counter = 0;
+int right_odom_counter = 0;
+
+void odomThreadCounter(){
+    int arr_[2];
+    std_msgs::Int32MultiArray msg;
+    // msg.layout.dim = (std_msgs::MultiArrayDimension *)malloc(sizeof(std_msgs::MultiArrayDimension) * 2);
+    // msg.layout.dim[0].size = 4;
+    // msg.layout.dim[0].stride = 1*4;
+    // msg.layout.dim_length = 1;
+    msg.data_length = 2;
+    // msg.data = (float*)malloc(sizeof(float) * 4);
+    msg.data = arr_;
+    // arr_[2] = is_l;
+    // arr_[3] = is_r;
+    msg.data[0] = left_odom_counter;
+    msg.data[1] = right_odom_counter;
+    
+    int counter = 0;
+
+    while(1){
+
+
+        if (last_odom_left != odom_left_opto.read()){
+            last_odom_left = odom_left_opto.read();
+            // odom_mtx.lock();
+            left_odom_counter++;
+            // odom_mtx.unlock();
+
+        }
+
+        if (last_odom_right != odom_right_opto.read()){
+            last_odom_right = odom_right_opto.read();
+            // odom_mtx.lock();
+            right_odom_counter++;
+            // odom_mtx.unlock();
+
+        }
+
+
+        if (counter >= 10){
+            counter = 0;
+            
+            odom->publish(&msg);
+
+            right_odom_counter = 0;
+            left_odom_counter = 0;
+        }else{
+            counter ++;
+        }
+
+        thread_sleep_for(20);
+
+    }
+}
 
 void initMotorsL298NPin(){
     for(int i = 0; i < sizeof(pin_motors_pwm)/sizeof(pin_motors_pwm[0]); i++){
@@ -63,7 +128,6 @@ void setMotorDirection(int pos_motor, bool is_forward){
 }
 
 void publishMotorCmd(float l_motor_, float r_motor_,  bool is_l, bool is_r){
-    
     float arr_[4];
     
     std_msgs::Float32MultiArray msg;
@@ -123,13 +187,12 @@ void VelCallback(const geometry_msgs::Twist& vel_msg){
     vx = vel_msg.linear.x;
     va = vel_msg.angular.z;
 
-    driveMotorByKinematics();
+    // driveMotorByKinematics();
 }
 
 int main()
 {
-   
-
+    
     initMotorsL298NPin();
 
     vx = va = 0;
@@ -139,20 +202,33 @@ int main()
 
     vel_subs = new ros::Subscriber<geometry_msgs::Twist>("/stm32/vel_cmd", &VelCallback);
     motor_fb_pub = new ros::Publisher("/stm32/motor_fb", new std_msgs::Float32MultiArray);
-    // chatter2 = new ros::Publisher("chatter2", new std_msgs::String);
-    
+    odom = new ros::Publisher("/stm32/sensors/odom", new std_msgs::Int32MultiArray);
+
+
     nh.advertise(*motor_fb_pub);
+    nh.advertise(*odom);
     nh.subscribe(*vel_subs);
+    
+    // odom_thread.start(odomThreadCounter);
+
     // Initialise the digital pin LED1 as an output
     DigitalOut led(LED1);
-    // int counter = 1;
+    int counter = 1;
     while (true) {
         led = !led;
 
         nh.spinOnce();
+
+        driveMotorByKinematics();
+
         // printf("HEHE %s\n", pesan.c_str());
         thread_sleep_for(25);
 
+        counter++;
+        if(counter >= 30){
+            counter = 0;
+            vx = vx = 0;
+        }
     }
 
 
